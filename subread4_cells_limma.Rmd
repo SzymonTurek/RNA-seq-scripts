@@ -1,0 +1,740 @@
+```{r, error=TRUE, results='hide', message=FALSE}
+library(SummarizedExperiment)
+library(org.Mm.eg.db)
+library(org.Hs.eg.db)
+library(DEFormats)
+library(tximportData)
+library(tximport)
+library(rhdf5)
+library(SummarizedExperiment)
+library("tximeta")
+#library("SummarizedExperiment", warn.conflicts = FALSE)
+library("edgeR")
+library("limma")
+library(tximport)
+library(GenomicFeatures)
+library(BiocParallel)
+library(org.Hs.eg.db)
+library(Homo.sapiens)
+library(Homo.sapiens)
+library("sva")
+library(DESeq2)
+library("tximeta")
+library("edgeR")
+library(Rsubread)
+library(BiocParallel)
+library(tximportData)
+library(tximport)
+library(rhdf5)
+library(SummarizedExperiment)
+library("tximeta")
+library("SummarizedExperiment", warn.conflicts = FALSE)
+library("edgeR")
+library("limma")
+library(tximport)
+library(GenomicFeatures)
+library(BiocParallel)
+library(org.Hs.eg.db)
+library(Homo.sapiens)
+library("sva")
+library(RColorBrewer)
+library(Glimma)
+library(gplots)
+
+```
+
+
+
+
+```{r, error=TRUE}
+
+extract_geneid_parallel <- function(geneid){
+  
+  return(strsplit(geneid,".", fixed = TRUE)[[1]][1])
+}
+
+coldata <- read.csv("~/Documents/salmon_v34/sample_table_cells.csv", row.names=1, stringsAsFactors=FALSE )
+coldata$names <- coldata$Run
+#files <- file.path("~/Documents/Analiza_RNA_seq/Kallisto/kallisto_v33", coldata$names, "abundance.h5" )
+#file.exists(files)
+```
+
+
+```{r, error=TRUE}
+x<- read.delim("~/Documents/Analiza_RNA_seq/analiza_RNA/counts_cells.txt")
+
+names(x)
+## Take a look at the featurecounts stats
+x$stat
+## Take a look at the dimensions to see the number of genes
+dim(x$counts)
+head(x$counts)
+head(x$annotation)
+```
+
+```{r, error=TRUE}
+counts_subread <- x[,-c(1,2)]
+rownames(counts_subread) <- x[,1]
+Group <- factor(paste(coldata$Line,coldata$Condition,sep="."))
+
+y <- DGEList(counts_subread, group=Group, genes=x[,1,drop=FALSE])
+keep <- filterByExpr(y, group=Group)#etap filtracji
+y_filter <- y[keep, , keep.lib.sizes=FALSE]
+
+subread.g.filtered  <- y[keep, keep.lib.sizes=FALSE]
+group <- factor(coldata$name)
+samples <- coldata$name
+```
+
+
+# ```{r, error=TRUE}
+# Group <- factor(paste(coldata$Line,coldata$Condition,sep="."))
+# 
+# y <- DGEList(fc$counts, group=Group)
+# keep <- filterByExpr(y, group=Group)#etap filtracji
+# y_filter <- y[keep, , keep.lib.sizes=FALSE]
+# 
+# subread.g.filtered2  <- y[keep, keep.lib.sizes=FALSE]
+# group <- factor(coldata$name)
+# samples <- coldata$name
+# 
+# ```
+
+
+Fragment uzyskania genes do gene ontology
+```{r, error=TRUE, results='hide', message=FALSE}
+yz <- DGEList(counts=subread.g.filtered, group = group)
+x <- yz
+dim(x)
+geneid <- rownames(x)
+#geneids <- bplapply(geneid, extract_geneid_parallel)
+geneids <- lapply(geneid,  sub, pattern = "\\.\\d+$", replacement = "")
+
+geneids <- unlist(geneids, use.names=FALSE)
+geneids
+keytypes(Homo.sapiens)
+genes <- select( Homo.sapiens, keys=geneids, columns=c("SYMBOL", "TXCHROM", "GENENAME", "ENTREZID"), 
+                 keytype="ENSEMBL")
+
+annot <- select(Homo.sapiens, keys=geneids, "ENTREZID", keytype="ENSEMBL")
+annot <- annot[!duplicated(annot$ENSEMBL),]
+
+x   
+head(genes)
+options(max.print=100000)
+genes
+genes <- genes[!duplicated(genes$ENSEMBL),]
+x$genes <- genes
+x 
+
+
+
+gene_entrezid <- mapIds(Homo.sapiens, keys=geneids,
+                   keytype="ENSEMBL", column="ENTREZID")
+
+gene_symbol <- mapIds(Homo.sapiens, keys=geneids,
+                   keytype="ENSEMBL", column="SYMBOL")
+
+gene_names <-  mapIds(Homo.sapiens, keys=geneids,
+                   keytype="ENSEMBL", column="GENENAME")
+
+gene_txid <- mapIds(Homo.sapiens, keys=geneids,
+                   keytype="ENSEMBL", column="ENSEMBLTRANS")
+
+genes_df <- data.frame(ENSEMBL=rownames(subread.g.filtered), ENTREZID=gene_entrezid, SYMBOL=gene_symbol, GENENAME=gene_names, ENSEMBLTRANS=gene_txid)
+
+genes_df
+x$genes <- genes_df
+
+```
+
+
+
+```{r, error=TRUE, results='hide', message=FALSE}
+###############################################
+dge <- x
+dge <- calcNormFactors(dge)
+
+```
+
+
+Exploring differences between libraries
+```{r, error=TRUE}
+
+pch <- c(0,1,2,15,16,17, 18, 6, 20)
+colors <- rep(c("darkgreen", "red", "blue", "black", "orange", "darkblue", "grey" ), 2)
+plotMDS(y, col=colors[Group], pch=pch[Group])
+legend("bottom", legend=levels(Group), pch=pch, col=colors, ncol=3)
+```
+
+
+
+```{r, error=TRUE, results='hide', message=FALSE}
+for (i in 1:ncol(y)){
+  plotMD(y, column=i)
+  abline(h=0, col="red", lty=2, lwd=2)
+}
+
+
+```
+
+
+
+```{r, error=TRUE, results='hide', message=FALSE}
+#Utworzenie mod1 i mod0 do sva:
+
+mod1 <- model.matrix(~0+Group, Group)
+mod0 <- model.matrix(~1, Group)
+
+
+#Fragment ze skryptu, który dostaliśmy, do pierwszej pętli:
+rownames(mod1) <- colnames(subread.g.filtered)
+v <- voom(dge,mod1,plot=FALSE)
+to_sva <- 2^v$E # do sva  dajemy znormalizowane, 
+#nie zlogarytmowane dane! ( voom robi log2- dlatego wracamy do oryginalnej skali)
+nsv<-num.sv(as.matrix(subread.g.filtered),mod1,method="leek") 
+#colnames(svseq$sv) <- c("a","b","t","r","ee","ere","ererre","rer","hg","dfh","wer","dgdf","bmbm","cxc","asd","zxv","svddf","sfddf","asdf","qrew","gdgf")
+
+#Tutaj jest pztla, ze wzgledu na to, ze svaseq zazwyczaj wyrzuca blad jezeli 
+#dasz mu tyle faktorów, ile num.sv pokaze na poczatku-  lecimy az savseq zadziala poprawnie
+an.error.occured <- TRUE
+while(an.error.occured==TRUE){
+  svseq <- try(svaseq(to_sva,mod1,mod0,const=0,n.sv=nsv),TRUE)
+  if(isTRUE(class(svseq)=="try-error")) { 
+    nsv <-nsv-1
+    next
+  } 
+  else { an.error.occured <- FALSE}
+}
+newV=NULL
+fsvaobj<-fsva(v$E,mod1,svseq,newdat=NULL)
+mmod1 <- cbind(svseq$sv,mod1)#mmod1 to design
+#colnames(mmod1) <- c(levels(factor(samples)), paste("X",1:nsv,sep=""))
+v2 <- voom(dge,mmod1,plot=FALSE)
+
+
+# Ta pętla jest z kolei dlatego, że często lmfit też wyrzyuca błąd przy zbyt dużej liczbie faktorów,
+# nawet, jeśli svaseq  działa
+an.error.occured <- TRUE
+while(an.error.occured==TRUE){
+  ok<-TRUE
+  fit<-tryCatch(lmFit(v2,mmod1,method='robust', maxit=9999),
+                warning=function(w){
+                  
+                  ok<<-FALSE
+                })
+  if (!ok)
+  {
+    nsv <-nsv-1
+    svseq <- svaseq(to_sva,mod1,mod0,const=0,n.sv=nsv)
+    mmod1 <- cbind(svseq$sv, mod1 )
+    #colnames(mmod1) <- c(levels(factor(samples)), paste("X",1:nsv,sep=""))
+    v2 <- voom(dge,mmod1,plot=FALSE)
+    next}
+  
+  else { an.error.occured <- FALSE}
+}   
+
+newV=NULL
+fsvaobj<-fsva(v$E,mod1,svseq,newdat=NULL) # jeszcze raz fsva na ostatecznej liczbie nsv
+#w limma wyszło 3SV
+#Ręczne nazwanie kolumn sva w dodanych do design: 
+
+```
+
+```{r, error=TRUE, results='hide', message=FALSE}
+colnames(mmod1) <- c("X", "X", "X", "C7.H3", "C7.H5" ,"C7.N" ,"G.H3" ,"G.H5" ,"G.N" ,"TC.H3", "TC.H5" ,"TC.N")
+design <- mmod1
+
+```
+
+
+
+```{r, error=TRUE, results='hide', message=FALSE}
+#Utworzenie macierzy kontrastów:
+conC7 <- makeContrasts(
+  C7.H3vsC7.H5 = C7.H3 - C7.H5,
+  C7.NvsC7.H5 = C7.N - C7.H5,
+  C7.NvsC7.H3 = C7.N - C7.H3,
+  contr_median = median(TC.H3+ TC.H5 + TC.N) - median(G.H3 +  G.H5 + G.N),
+  contr2_mean = (TC.H3+ TC.H5 + TC.N)/3 - (G.H3 +  G.H5 + G.N)/3, levels = design
+)
+
+conG  <- makeContrasts(
+  G.H3vsG.H5 = G.H3 - G.H5,
+  G.NvsG.H5 = G.N - G.H5,
+  G.NvsG.H3 = G.N -G.H3, levels = design
+  
+)
+
+conTC<- makeContrasts(
+  TC.H3vsTC.H5 = TC.H3 - TC.H5,
+  TC.NvsTC.H5 = TC.N - TC.H5,
+  TC.NvsTC.H3 = TC.N -TC.H3, levels = design
+)
+
+
+my.contrasts <- makeContrasts(
+  C7.H3vsC7.H5 = C7.H3 - C7.H5,
+  C7.H3vsC7.N = C7.H3 - C7.N,
+  C7.H5vsC7.N = C7.H5 - C7.N,
+  G.H3vsG.H5 = G.H3 - G.H5, 
+  G.H3vsG.N = G.H3 - G.N,
+  G.H5vsG.N = G.H5 - G.N,
+  TC.H3vsTC.H5 = TC.H3 - TC.H5,
+  TC.H3vsTC.N = TC.H3 - TC.N, 
+  TC.H5vsTC.N = TC.H5 - TC.N, levels = design 
+)
+contrasts_names <- c("C7.H3vsC7.H5" , "C7.H3vsC7.N", "C7.H5vsC7.N" , "G.H3vsG.H5" , "G.H3vsG.N" , "G.H5vsG.N",  "TC.H3vsTC.H5" , "TC.H3vsTC.N", "TC.H5vsTC.N"   )
+
+```
+
+
+
+tutaj porównanie dge po calcNormFactors z nieznormalizowanymi danymi
+```{r, error=TRUE}
+# x<- dge
+# x2 <- x
+# x2$samples$norm.factors <- 1
+# x2$counts[,1] <- ceiling(x2$counts[,1]*0.05)
+# x2$counts[,2] <- x2$counts[,2]*5
+# 
+# par(mfrow=c(1,2))
+# lcpm <- cpm(x2, log=TRUE)
+# boxplot(lcpm, las=2, main="")
+# title(main="A. Example: Unnormalised data",ylab="Log-cpm")
+# x2 <- calcNormFactors(x2)  
+# x2$samples$norm.factors
+# 
+# lcpm <- cpm(x, log=TRUE)
+# boxplot(lcpm, las=2, main="")
+# title(main="B. Example: Normalised data",ylab="Log-cpm")
+```
+
+
+```{r, error=TRUE}
+lcpm <- cpm(x, log=TRUE)
+# par(mfrow=c(1,2))
+# col.group <- Group
+# levels(col.group) <-  brewer.pal(nlevels(col.group), "Set1")
+# col.group <- as.character(col.group)
+# plotMDS(lcpm, labels=Group, col = col.group)
+# title(main="Sample groups")
+```
+
+
+interaktywny plot mds
+```{r, error=TRUE}
+
+
+# glMDSPlot(lcpm, labels=paste(Group), 
+#           groups=dge$samples, launch=TRUE)
+```
+
+Exploring differences between libraries
+```{r, error=TRUE}
+
+pch <- c(0,1,2,15,16,17, 18, 6, 20)
+colors <- rep(c("darkgreen", "red", "blue", "black", "orange", "darkblue", "grey" ), 2)
+plotMDS(fsvaobj$db, col=colors[Group], pch=pch[Group])
+
+legend("topright", legend=levels(Group), pch=pch, col=colors, ncol=3)
+
+
+```
+
+Removing heteroscedascity from count data
+```{r, error=TRUE}
+par(mfrow=c(1,2))
+# v <- voom(dge, design, plot=TRUE)
+# v
+
+#vfit <- lmFit(v, design)
+vfit <- contrasts.fit(fit, contrasts=my.contrasts)
+efit <- eBayes(vfit)
+plotSA(efit, main="Final model: Mean-variance trend")
+
+```
+
+```{r}
+dir.create(paste0("DE_common"), showWarnings = FALSE)
+capture.output(summary(decideTests(efit)), file = file.path(paste0("DE_common"), "efit_summary.txt"))
+summary(decideTests(efit))
+```
+
+```{r}
+tfit <- treat(vfit, lfc=log2(1.5))
+dt <- decideTests(tfit)
+summary(dt)
+#write.fit(tfit, dt, file="results.txt")
+
+
+dir.create(paste0("DE_common"), showWarnings = FALSE)
+capture.output(summary(dt), file = file.path(paste0("DE_common"), "tfit_summary.txt"))
+```
+```{r}
+for (i in 1:length(contrasts_names)){
+  try(de.common <- which(dt[,i]!=0 & dt[,i+1]!=0))
+  print(length(de.common))
+  try(print(head(tfit$genes$SYMBOL[de.common], n=20)))
+  l1 = i
+  l2 = i+1
+  try(vennDiagram(dt[,l1:l2], circle.col=c("turquoise", "salmon")))
+}
+vennDiagram(dt[,1:3], circle.col=c("turquoise", "salmon"))
+```
+
+
+```{r}
+# C7.H3vsC7.H5 C7.H3vsC7.N C7.H5vsC7.N G.H3vsG.H5 G.H3vsG.N G.H5vsG.N TC.H3vsTC.H5 TC.H3vsTC.N TC.H5vsTC.N
+#2-3, 5-6 , 8-9
+dir.create(paste0("DE_common"), showWarnings = FALSE)
+de.common <- which(dt[,2]!=0 & dt[,3]!=0)
+length(de.common)
+head(tfit$genes$SYMBOL[de.common], n=20)
+de.common_df <- as.data.frame(tfit$genes$SYMBOL[de.common]) 
+write.csv(de.common_df, file = file.path(paste0("DE_common"), "de_common_C7H3H5_C7N.csv"))
+vennDiagram(dt[,2:3], circle.col=c("turquoise", "salmon"))
+```
+
+
+```{r}
+# C7.H3vsC7.H5 C7.H3vsC7.N C7.H5vsC7.N G.H3vsG.H5 G.H3vsG.N G.H5vsG.N TC.H3vsTC.H5 TC.H3vsTC.N TC.H5vsTC.N
+
+dir.create(paste0("DE_common"), showWarnings = FALSE)
+de.common <- which(dt[,5]!=0 & dt[,6]!=0)
+length(de.common)
+head(tfit$genes$SYMBOL[de.common], n=20)
+de.common_df <- as.data.frame(tfit$genes$SYMBOL[de.common]) 
+write.csv(de.common_df, file = file.path(paste0("DE_common"), "de_common_GH35_GN.csv"))
+vennDiagram(dt[,5:6], circle.col=c("turquoise", "salmon"))
+```
+
+
+```{r}
+# C7.H3vsC7.H5 C7.H3vsC7.N C7.H5vsC7.N G.H3vsG.H5 G.H3vsG.N G.H5vsG.N TC.H3vsTC.H5 TC.H3vsTC.N TC.H5vsTC.N
+
+de.common <- which(dt[,8]!=0 & dt[,9]!=0)
+length(de.common)
+head(tfit$genes$SYMBOL[de.common], n=20)
+de.common_df <- as.data.frame(tfit$genes$SYMBOL[de.common]) 
+write.csv(de.common_df, file = file.path(paste0("DE_common"), "de_common_TCH35_TCN.csv"))
+vennDiagram(dt[,8:9], circle.col=c("turquoise", "salmon"))
+```
+
+
+
+```{r}
+# C7.H3vsC7.H5 C7.H3vsC7.N C7.H5vsC7.N G.H3vsG.H5 G.H3vsG.N G.H5vsG.N TC.H3vsTC.H5 TC.H3vsTC.N TC.H5vsTC.N
+
+de.common <- which(dt[,2]!=0 & dt[,3]& dt[,5]& dt[,6]& dt[,8]& dt[,9]!=0)
+length(de.common)
+head(tfit$genes$SYMBOL[de.common], n=20)
+de.common_df <- as.data.frame(tfit$genes$SYMBOL[de.common]) 
+write.csv(de.common_df, file = file.path(paste0("DE_common"), "de_common_H35_N.csv"))
+vennDiagram(dt[,c(2,3,5,6,8)], circle.col=c("turquoise", "salmon"))
+```
+
+
+
+```{r, error=TRUE}
+tfit_function <- function(coef_number, contr_name){
+  top_treat <-topTreat(tfit, coef=coef_number, n=Inf) 
+
+  dir.create(paste0("results_",contr_name), showWarnings = FALSE)
+  dir.create(paste0("results_",contr_name, "/tfit"), showWarnings = FALSE)
+  top_treat_df <- as.data.frame(top_treat)[1:100,]
+  write.csv(top_treat_df, file = file.path(paste0("results_",contr_name, "/tfit"), "topDE_tft.csv"))
+  return(top_treat)
+}
+
+
+```
+
+
+
+```{r, error=TRUE}
+efit_function <- function(coef_number, contr_name){
+  dir.create(paste0("results_",contr_name), showWarnings = FALSE)
+  result <- topTable(efit, number = 100, adjust = "BH", p.value = 0.05, coef = coef_number) #lfc = 1, coef = coef_number)
+  result_df <- as.data.frame(result)[1:100,]
+  dir.create(paste0("results_",contr_name, "/efit"), showWarnings = FALSE)
+  write.csv(result_df, file = file.path(paste0("results_",contr_name, "/efit"), "topDE_eft.csv"))
+  return(result)
+}
+```
+
+
+
+```{r, error=TRUE}
+#Useful graphical representations of differential expression results
+de_graph <- function(coef_number, contr_name, stat_test, folder_name){
+  jpeg(file.path(paste0("results_",contr_name, "/", folder_name), "MD_plot.jpg"))
+  plotMD(stat_test, column=coef_number, status=dt[,coef_number], main=colnames(stat_test)[1],
+         xlim=c(-8,13))
+  
+  dev.off()
+}
+
+```
+
+
+
+```{r, error=TRUE}
+go_analysis <- function(coef_number, contr_name, stat_test, folder_name){
+  
+  go.fisher <- goana(stat_test, species="Hs", geneid="ENTREZID")
+  print(topGO(go.fisher, sort = "up"))
+  topgo_df<- as.data.frame(topGO(go.fisher, sort = "up"))
+  write.csv(topgo_df, file = file.path(paste0("results_",contr_name, "/", folder_name), "topgo_up.csv"))
+  topgo_dff<- as.data.frame(topGO(go.fisher, sort = "down"))
+  write.csv(topgo_dff, file = file.path(paste0("results_",contr_name, "/", folder_name), "topgo_down.csv"))
+}
+```
+
+
+
+```{r, error=TRUE}
+kegg_analysis <- function(coef_number, contr_name, stat_test, folder_name){
+  k <- kegga(tfit, coef=coef_number, species="Hs", geneid="ENTREZID")
+  topkegg_df<- as.data.frame(topKEGG(k, sort = "up"))
+  write.csv(topkegg_df, file = file.path(paste0("results_",contr_name, "/", folder_name), "topkegg_up.csv"))
+  
+  topkegg_dff<- as.data.frame(topKEGG(k, sort = "down"))
+  write.csv(topkegg_df, file = file.path(paste0("results_",contr_name, "/", folder_name), "topkegg_down.csv"))
+}
+```
+
+
+
+```{r, error=TRUE}
+heatmap <- function(top_treat, contr_name, folder_name){
+  
+  top_treat.topgenes <- top_treat$SYMBOL[1:100]
+  i <- which(v$genes$SYMBOL %in% top_treat.topgenes)
+  mycol <- colorpanel(1000,"blue","white","red")
+  par(mfrow=c(1,2))
+
+
+  jpeg(file.path(paste0("results_",contr_name, "/", folder_name), "heatmap.jpg"))
+  heatmap.2(lcpm[i,], scale=c("row"),
+          labRow=v$genes$SYMBOL[i], labCol=group,
+          col=mycol, trace="none", density.info="none",
+          margin=c(8,6), lhei=c(2,10), dendrogram="column")
+
+  dev.off()
+  
+
+}
+```
+
+
+```{r, error=TRUE}
+heatmap_onlyDE <- function(top_treat, contr_name, folder_name){
+  top_treat.topgenes <- top_treat$ENSEMBL[1:30]
+  top_treat.topnames <- top_treat$SYMBOL[1:30]
+  logCPM <- lcpm
+  rownames(logCPM) <- v$genes$ENSEMBL
+  nowy<-logCPM[as.vector(top_treat.topgenes),]
+  rownames(nowy) <- top_treat.topnames
+  jpeg(file.path(paste0("results_",contr_name, "/", folder_name), "heatmap_onlyDE.jpg"))
+  coolmap(nowy ,margins=c(7,7), lhei=c(1,6), lwid=c(1,3),show.dendrogram = "both"  )#row both none column
+  dev.off()
+  }
+```
+
+
+```{r, error=TRUE}
+heat_map_svobj <- function(top_treat, contr_name, folder_name){
+  top_treat.topgenes <- top_treat$ENSEMBL[1:30]
+  top_treat.topnames <- top_treat$SYMBOL[1:30]
+  logCPM <- fsvaobj$db
+  rownames(logCPM) <- v$genes$ENSEMBL
+  nowy<-logCPM[as.vector(top_treat.topgenes),]
+  rownames(nowy) <- top_treat.topnames
+  jpeg(file.path(paste0("results_",contr_name, "/", folder_name), "heatmap_onlyDE_svobj.jpg"))
+  coolmap(nowy ,margins=c(7,7), lhei=c(1,6), lwid=c(1,3),show.dendrogram = "both"  )#row both none column
+  dev.off()
+  }
+```
+
+
+```{r, error=TRUE}
+heat_map_svobj2 <- function(top_treat, contr_name, folder_name){
+  top_treat.topgenes <- top_treat$ENSEMBL[1:100]
+  top_treat.topnames <- top_treat$SYMBOL[1:100]
+  logCPM <- fsvaobj$db
+  rownames(logCPM) <- v$genes$ENSEMBL
+  nowy<-logCPM[as.vector(top_treat.topgenes),]
+  rownames(nowy) <- top_treat.topnames
+  jpeg(file.path(paste0("results_",contr_name, "/", folder_name), "heatmap_onlyDE_svobj2.jpg"))
+  coolmap(nowy ,margins=c(7,7), lhei=c(1,6), lwid=c(1,3),show.dendrogram = "both"  )#row both none column
+  dev.off()
+  }
+```
+
+```{r, error=TRUE}
+heat_map_svobj3 <- function(top_treat, contr_name, folder_name){
+  top_treat.topgenes <- top_treat$ENSEMBL[1:10]
+  top_treat.topnames <- top_treat$SYMBOL[1:10]
+  logCPM <- fsvaobj$db
+  rownames(logCPM) <- v$genes$ENSEMBL
+  nowy<-logCPM[as.vector(top_treat.topgenes),]
+  rownames(nowy) <- top_treat.topnames
+  jpeg(file.path(paste0("results_",contr_name, "/", folder_name), "heatmap_onlyDE_svobj3.jpg"))
+  coolmap(nowy ,margins=c(7,7), lhei=c(1,6), lwid=c(1,3),show.dendrogram = "both"  )#row both none column
+  dev.off()
+  }
+```
+
+```{r, error=TRUE}
+heat_map_svobj4 <- function(top_treat, contr_name, folder_name){
+  top_treat.topgenes <- top_treat$ENSEMBL[1:200]
+  top_treat.topnames <- top_treat$SYMBOL[1:200]
+  logCPM <- fsvaobj$db
+  rownames(logCPM) <- v$genes$ENSEMBL
+  nowy<-logCPM[as.vector(top_treat.topgenes),]
+  rownames(nowy) <- top_treat.topnames
+  jpeg(file.path(paste0("results_",contr_name, "/", folder_name), "heatmap_onlyDE_svobj4.jpg"))
+  coolmap(nowy ,margins=c(7,7), lhei=c(1,6), lwid=c(1,3),show.dendrogram = "both"  )#row both none column
+  dev.off()
+  }
+```
+```{r, error=TRUE}
+# #a heatmap to visualize the top 30 DE genes according to the test
+# heat_map_svobj <- function(contr_name, y, st_test, folder_name){
+#   dir.create(paste0("results_",contr_name, "/", folder_name), showWarnings = FALSE)
+#   logCPM <- fsvaobj$db
+#   rownames(logCPM) <- y$genes$SYMBOL
+#   colnames(logCPM) <- paste(y$samples$group, 1:3, sep="-")
+#   o <- order(st_test$table$PValue)
+#   logCPM <- logCPM[o[1:100],]
+#   
+#   jpeg(file.path(paste0("results_",contr_name,"/", folder_name), "heatmap_svobj2.jpg"))
+#   coolmap(logCPM, margins=c(7,7), lhei=c(1,6), lwid=c(1,3))
+#   dev.off()
+# }
+```
+
+```{r, error=TRUE}
+DE_analyse <- function(coef_number, contr_name){
+  top_treat <- tfit_function(coef_number, contr_name)
+  top_table <- efit_function(coef_number, contr_name)
+  
+  de_graph(coef_number, contr_name, tfit, "tfit")
+  de_graph(coef_number, contr_name, efit, "efit")
+  
+  go_analysis(coef_number, contr_name, tfit, "tfit")
+  go_analysis(coef_number, contr_name, efit, "efit")
+  
+  kegg_analysis(coef_number, contr_name, tfit, "tfit")
+  kegg_analysis(coef_number, contr_name, efit, "efit")
+  
+  heatmap(top_treat, contr_name, "tfit")
+  heatmap(top_table, contr_name, "efit")
+  
+  heatmap_onlyDE(top_treat, contr_name, "tfit")
+  heatmap_onlyDE(top_treat, contr_name, "efit")
+  
+  heat_map_svobj(top_treat, contr_name, "tfit")
+  heat_map_svobj(top_treat, contr_name, "efit")
+  
+  heat_map_svobj2(top_treat, contr_name, "tfit")
+  heat_map_svobj2(top_treat, contr_name, "efit")
+  
+  heat_map_svobj3(top_treat, contr_name, "tfit")
+  heat_map_svobj3(top_treat, contr_name, "efit")
+  
+  heat_map_svobj4(top_treat, contr_name, "tfit")
+  heat_map_svobj4(top_treat, contr_name, "efit")
+}
+```
+
+
+
+
+```{r, error=TRUE}
+for (i in 1:length(contrasts_names))
+#for (i in 1:3)
+{
+  print(contrasts_names[i])
+  DE_analyse(i, contrasts_names[i])
+  
+  
+}
+
+```
+
+
+CZęść do uzsyskania wyników dla średnich
+```{r}
+my.contrasts <- makeContrasts(
+  conH3_H5  = (C7.H3+ G.H3 + TC.H3)/3 - (C7.H5+G.H5+TC.H5)/3, 
+  conH3_N = (C7.H3+ G.H3 + TC.H3)/3 - (C7.N+G.N+TC.N)/3, 
+  conH5_N = (C7.H5+ G.H5 + TC.H5)/3 - (C7.N+G.N+TC.N)/3, 
+  conC7_TC = (C7.H3+ C7.H5 + C7.N)/3 - (TC.H3+TC.H5+TC.N)/3, 
+  conC7_G =  (C7.H3+ C7.H5 + C7.N)/3 - (G.H3+G.H5+G.N)/3, 
+  conTC_G =  (TC.H3+ TC.H5 + TC.N)/3 - (G.H3+G.H5+G.N)/3, levels = design 
+)
+contrasts_names <- c("conH3_H5" , "conH3_N", "conH5_N" , "conC7_TC" , " conC7_G " , "conTC_G"   )
+
+
+```
+
+
+```{r}
+# par(mfrow=c(1,2))
+# v <- voom(dge, design, plot=TRUE)
+# v
+# 
+# vfit <- lmFit(v, design)
+# vfit <- contrasts.fit(vfit, contrasts=my.contrasts)
+# efit <- eBayes(vfit)
+# plotSA(efit, main="Final model: Mean-variance trend")
+
+```
+
+
+```{r}
+
+tfit <- treat(vfit, lfc=log2(1.5))
+dt <- decideTests(tfit)
+summary(dt)
+#write.fit(tfit, dt, file="results.txt")
+
+
+dir.create(paste0("DE_common"), showWarnings = FALSE)
+capture.output(summary(dt), file = file.path(paste0("DE_common"), "tfit_mean_summary.txt"))
+
+# tfit <- treat(vfit, lfc=log2(1.5))
+# dt <- decideTests(tfit)
+# summary(dt)
+# #write.fit(tfit, dt, file="results.txt")
+# 
+# 
+# dir.create(paste0("DE_common"), showWarnings = FALSE)
+# capture.output(summary(dt), file = file.path(paste0("DE_common"), "tfit_mean_summary.txt"))
+
+
+```
+```{r}
+for (i in 1:length(contrasts_names))
+#for (i in 1:3)
+{
+  print(contrasts_names[i])
+  DE_analyse(i, contrasts_names[i])
+  
+  
+}
+
+```
+
+
+
+
+
+
+
+
+
+

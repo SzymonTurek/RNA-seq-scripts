@@ -1,0 +1,679 @@
+
+```{r, error=TRUE, results='hide', message=FALSE}
+# Wczytanie bibliotek oraz plików - z powodu zbyt małej pamięci RAM tylko komórki:
+library(tximportData)
+library(tximport)
+library(rhdf5)
+library(SummarizedExperiment)
+library("tximeta")
+library("SummarizedExperiment", warn.conflicts = FALSE)
+library("edgeR")
+library("limma")
+library(tximport)
+library(GenomicFeatures)
+library(BiocParallel)
+library(org.Hs.eg.db)
+library(Homo.sapiens)
+library("sva")
+library(RColorBrewer)
+library(Glimma)
+library(gplots)
+```
+
+
+
+```{r, error=TRUE, results='hide', message=FALSE}
+extract_geneid_parallel <- function(geneid){
+  
+  return(strsplit(geneid,".", fixed = TRUE)[[1]][1])
+}
+#coldata <- read.csv("~/Documents/Analiza_RNA_seq/Kallisto/kallisto_v33/sample_table.csv", row.names=1, stringsAsFactors=FALSE )
+coldata <- read.csv("~/Documents/salmon_v34/sample_table_cells.csv", row.names=1, stringsAsFactors=FALSE )
+coldata$names <- coldata$Run
+files <- file.path("~/Documents/kallisto_v37", coldata$names, "abundance.h5" )
+file.exists(files)
+
+names(files) <- coldata$names
+
+
+txdb <- makeTxDbFromGFF(file="~/Documents/kallisto_v37/gencode.v37.annotation.gtf", dataSource="partial gtf file for Tomatoes for testing", organism="Solanum lycopersicum")
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+rm(txdb)
+gc()#usuwam txdb z workspace i uaktualniam ram
+```
+
+```{r, error=TRUE}
+txi.kallisto <- tximport(files, type = "kallisto", tx2gene = tx2gene, ignoreAfterBar = TRUE)
+head(txi.kallisto$counts)
+```
+
+
+```{r, error=TRUE}
+head(txi.kallisto$counts)
+```
+
+
+```{r, error=TRUE, results='hide', message=FALSE}
+library(tximportData)
+library(tximport)
+library(rhdf5)
+library("tximeta")
+library("SummarizedExperiment", warn.conflicts = FALSE)
+library("edgeR")
+library("limma")
+library(GenomicFeatures)
+library(BiocParallel)
+library(org.Hs.eg.db)
+library(Homo.sapiens)
+library(DESeq2)
+library("sva")
+library("dplyr", warn.conflicts = FALSE )
+library("ggplot2" )
+library("pheatmap")
+library("RColorBrewer")
+library("PoiClaClu")
+library("glmpca")
+library("ggbeeswarm")
+library("genefilter", warn.conflicts = FALSE)
+library("AnnotationDbi")
+library("ReportingTools")
+#BiocManager::install("Gviz")
+library("Gviz")
+library("apeglm")
+library("genefilter", warn.conflicts = FALSE)
+register(MulticoreParam(14))
+library("vsn")
+```
+
+
+```{r, error=TRUE, results='hide', message=TRUE}
+
+Group <- factor(paste(coldata$Line,coldata$Condition,sep="."))
+mod1 <- model.matrix(~0+Group)
+dds <- DESeqDataSetFromTximport(txi.kallisto, colData = coldata, design = mod1)
+```
+
+```{r, error=TRUE, results='hide', message=TRUE}
+nrow(dds)
+#keep <- rowSums(counts(dds) >= 10) >= 3#tutaj filtracja 
+keep <- filterByExpr(counts(dds), group=Group)
+#keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+nrow(dds)
+```
+
+
+```{r, error=TRUE, results='hide', message=TRUE}
+vsd <- vst(dds, blind = FALSE)
+#head(assay(vsd), 3)
+#colData(vsd)
+dds <- estimateSizeFactors(dds)
+dat  <- counts(dds, normalized = TRUE)
+#idx  <- rowMeans(dat) > 1
+#dat  <- dat[idx, ]
+mod1 <- model.matrix(~0+Group, Group)
+mod0 <- model.matrix(~1, Group)
+#mod  <- model.matrix(~0+Line + Condition, colData(dds))
+#mod0 <- model.matrix(~1+ Line , colData(dds))
+nsv<-num.sv(as.matrix(dat),mod1,method="be",  vfilter = NULL, B = 20, seed = NULL) # https://gist.github.com/slavailn/337d99a7b839547527429da52696c654
+svseq <- svaseq(dat, mod1, mod0, n.sv = nsv)#https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-015-0808-5
+
+ddssva <- dds
+ddssva$SV1 <- svseq$sv[,1]
+ddssva$Group <- Group
+design(ddssva) <- ~SV1 + Group
+design(ddssva)
+```
+
+
+```{r, error=TRUE}
+sampleDists <- dist(t(assay(vsd)))
+#sampleDists
+
+library("pheatmap")
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( vsd$condition, vsd$cell, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+
+```{r, error=TRUE}
+
+library("PoiClaClu")
+poisd <- PoissonDistance(t(counts(dds)))
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( dds$SampleName )
+colnames(samplePoisDistMatrix) <- paste( dds$SampleName)
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+
+```
+
+
+```{r, error=TRUE}
+plotPCA(vsd, intgroup = c("Condition", "cell"))
+plotPCA(vsd, intgroup = c("Condition", "Type"))
+plotPCA(vsd, intgroup = c("Condition", "Line"))
+plotPCA(vsd, intgroup = c("Condition"))
+plotPCA(vsd, intgroup = c("names"))
+```
+
+
+```{r, error=TRUE}
+
+pcaData <- plotPCA(vsd, intgroup = c( "cell", "Condition"), returnData = TRUE)
+pcaData
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = cell, shape = Condition)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA with VST data")  
+
+```
+
+
+```{r, error=TRUE}
+
+
+library("glmpca")
+gpca <- glmpca(counts(dds), L=2)
+gpca.dat <- gpca$factors
+gpca.dat$cell <- dds$cell
+gpca.dat$condition <- dds$Condition
+ggplot(gpca.dat, aes(x = dim1, y = dim2, color = cell, shape = condition)) +
+  geom_point(size =3) + coord_fixed() + ggtitle("glmpca - Generalized PCA")
+
+mds <- as.data.frame(colData(vsd))  %>%
+  cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = cell, shape = Condition)) +
+  geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data")
+
+mdsPois <- as.data.frame(colData(dds)) %>%
+  cbind(cmdscale(samplePoisDistMatrix))
+ggplot(mdsPois, aes(x = `1`, y = `2`, color = cell, shape = Condition)) +
+  geom_point(size = 3) + coord_fixed() + ggtitle("MDS with PoissonDistances")
+
+
+```
+
+```{r, error=TRUE}
+dds <- DESeq(ddssva)
+contr1 <- c("C7.H3","C7.H3","C7.H5", "G.H3", "G.H3" , "G.H5", "TC.H3","TC.H3", "TC.H5")
+contr2 <- c("C7.H5", "C7.N","C7.N", "G.H5" ,  "G.N", "G.N", "TC.H5","TC.N", "TC.N")
+
+```
+
+
+```{r, error=TRUE}
+volcanoPlot <- function(res,con1, con2, lfc=2, pval=0.05 ){
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  jpeg(file.path(paste0("results_",con1,"vs", con2), "volcano_plot.jpg"))
+  
+  tab = data.frame(logFC = res$log2FoldChange, negLogPval = -log10(res$pvalue))
+  plot(tab, pch = 16, cex = 0.6, xlab = expression(log[2]~fold~change), ylab = expression(-log[10]~pvalue))
+  signGenes = (abs(tab$logFC) > lfc & tab$negLogPval > -log10(pval))
+  points(tab[signGenes, ], pch = 16, cex = 0.8, col = "red") 
+  abline(h = -log10(pval), col = "green3", lty = 2) 
+  abline(v = c(-lfc, lfc), col = "blue", lty = 2) 
+  mtext(paste("pval =", pval), side = 4, at = -log10(pval), cex = 0.8, line = 0.5, las = 1) 
+  mtext(c(paste("-", lfc, "fold"), paste("+", lfc, "fold")), side = 3, at = c(-lfc, lfc), cex = 0.8, line = 0.5)
+  
+  dev.off()
+}
+```
+
+
+
+```{r, error=TRUE}
+res_func <- function(con1, con2){
+  res <- results(dds, contrast=c("Group",con1,con2))
+  print(res)
+  res_DF <- as.data.frame(res)[1:100,]
+  
+  
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE) #stops warnings if folder already exists
+  write.csv(res_DF, file = file.path(paste0("results_",con1,"vs", con2), "res.csv"))
+  summary(res)
+  capture.output(summary(res), file = file.path(paste0("results_",con1,"vs", con2), "summary.txt"))
+  return(res)
+}
+```
+
+
+```{r, error=TRUE}
+res05_func <- function(con1, con2){
+  res05 <- results(dds,contrast=c("Group",con1,con2),  alpha=0.05)
+  res05_DF <- as.data.frame(res05)[1:100,]
+  cat("\nSummary and sum of res05")
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  write.csv(res05_DF, file = file.path(paste0("results_",con1,"vs", con2), "res05.csv"))
+  
+  capture.output(summary(res05), 
+                 file = file.path(paste0("results_",con1,"vs", con2), "summary05.txt"))
+  
+  capture.output(table(res05$padj < 0.05), 
+                 file = file.path(paste0("results_",con1,"vs", con2), "summary05.txt"), 
+                 append = TRUE)
+  
+  capture.output(sum(res05$padj < 0.05, na.rm=TRUE),                                     #liczba genów z p value poniżej 0.05
+                 file = file.path(paste0("results_",con1,"vs", con2), "summary05.txt"), 
+                 append = TRUE) 
+
+}
+```
+
+
+```{r, error=TRUE}
+resLFC1_func <- function(con1, con2){
+  #Summary of resLFC1. By specifying lfcThreshold = 1, we test for genes that show significant effects of treatment on gene counts more than doubling or less than halving, because 2^1=2.
+  resLFC1 <- results(dds,contrast=c("Group",con1,con2),  lfcThreshold=1)
+  resLFC1_DF <- as.data.frame(resLFC1)[1:100,]
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  write.csv(resLFC1_DF, file = file.path(paste0("results_",con1,"vs", con2), "resLFC1.csv"))
+  
+  capture.output(summary(resLFC1), 
+                 file = file.path(paste0("results_",con1,"vs", con2), "summaryLFC1.txt"))
+        
+  capture.output(table(resLFC1$padj < 0.1), 
+                 file = file.path(paste0("results_",con1,"vs", con2), "summaryLFC1.txt"),
+                 append = TRUE)    
+  return(resLFC1)
+}
+```
+  
+  
+```{r, error=TRUE}
+resSig_func <- function(con1, con2, res){
+    #We subset the results table to these genes and then sort it by the log2 fold change estimate to get the significant genes with the strongest down-regulation
+  resSig <- subset(res, padj < 0.1)
+  print(head(resSig[ order(resSig$log2FoldChange), ]))
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  capture.output(head(resSig[ order(resSig$log2FoldChange), ]), 
+                 file = file.path(paste0("results_",con1,"vs", con2), "strongest_down_regulation.txt"))
+  
+  
+  #and with the strongest up-regulation
+  print(head(resSig[ order(resSig$log2FoldChange, decreasing = TRUE), ]))
+  capture.output(head(resSig[ order(resSig$log2FoldChange, decreasing = TRUE), ]), 
+                 file = file.path(paste0("results_",con1,"vs", con2), "strongest_up_regulation.txt"))
+}
+
+```
+
+
+```{r, error=TRUE}
+counts_plot <- function(con1, con2, res, dds){
+  #A quick way to visualize the counts for a particular gene is to use the plotCounts function that takes as arguments the DESeqDataSet, a gene name, and the group over which to plot the counts.
+  topGene <- rownames(res)[which.min(res$padj)]
+  plotCounts(dds, gene = topGene, intgroup=c("Condition"))
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  
+  
+  jpeg(file.path(paste0("results_",con1,"vs", con2), "rplot.jpg"))
+  plotCounts(dds, gene = topGene, intgroup=c("Condition"))
+  dev.off()
+  return(topGene)
+}
+```
+
+
+```{r, error=TRUE}
+ggplot_function <- function(topGene, con1, con2, res){
+  topGene <- rownames(res)[which.min(res$padj)]
+  geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("Condition","Line"), returnData = TRUE)  
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  
+  p <- ggplot(geneCounts, aes(x = Condition, y = count, color = Line)) +   scale_y_log10() +  geom_beeswarm(cex = 3)
+  png(file.path(paste0("results_",con1,"vs", con2), "ggplot1.png"))
+  print(p)
+  dev.off()
+  
+  png(file.path(paste0("results_",con1,"vs", con2), "ggplot2.png"))
+  print(ggplot(geneCounts, aes(x = Condition, y = count, color = Line, group = Line)) +  scale_y_log10() + geom_point(size = 3) + geom_line())
+  dev.off()
+}
+```
+
+
+```{r, error=TRUE}
+MA_plot <- function(con1, con2){
+  #Before making the MA-plot, we use the lfcShrink function to shrink the log2 fold changes for the comparison of dex treated vs untreated samples.
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  res2 <- lfcShrink(dds, coef=paste("Group_", con2, "_vs_", con1, sep = ''), type="apeglm")
+  jpeg(file.path(paste0("results_",con1,"vs", con2), "MA_plot.jpg"))
+  print(plotMA(res2, ylim = c(-5, 5)))
+  dev.off()
+  
+  jpeg(file.path(paste0("results_",con1,"vs", con2), "MA_plot2.jpg"))
+  plotMA(res2, ylim = c(-12,12))
+  topGene <- rownames(res2)[which.min(res$padj)]
+    with(res2[topGene, ], {
+    points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
+    text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
+  })
+  dev.off()
+
+  
+}
+```
+
+
+```{r, error=TRUE}
+pval_hist <- function(res, con1, con2){
+    
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  jpeg(file.path(paste0("results_",con1,"vs", con2), "pval_plot.jpg"))
+  hist(res$pvalue[res$baseMean > 1], breaks = 0:20/20,
+       col = "grey50", border = "white")
+  
+  dev.off()  
+  
+}
+```
+
+
+```{r, error=TRUE}
+independent_filtering <- function(resLFC1, con1, con2){
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  qs <- c(0, quantile(resLFC1$baseMean[resLFC1$baseMean > 0], 0:6/6))
+  bins <- cut(resLFC1$baseMean, qs)
+  levels(bins) <- paste0("~", round(signif((qs[-1] + qs[-length(qs)])/2, 2)))
+  fractionSig <- tapply(resLFC1$pvalue, bins, function(p)
+    mean(p < .05, na.rm = TRUE))
+  
+  jpeg(file.path(paste0("results_",con1,"vs", con2), "ind_filt.jpg"))
+  barplot(fractionSig, xlab = "mean normalized count",
+          ylab = "fraction of small p values")
+  dev.off()
+}
+
+```
+
+
+```{r, error=TRUE} 
+annotation_func <- function(res, con1, con2){
+  ens.str <- substr(rownames(res), 1, 15)
+  res$symbol <- mapIds(org.Hs.eg.db,
+                       keys=ens.str,
+                       column="SYMBOL",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+  res$entrez <- mapIds(org.Hs.eg.db,
+                       keys=ens.str,
+                       column="ENTREZID",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+  
+  resOrdered <- res[order(res$pvalue),]
+  
+  resOrderedDF <- as.data.frame(resOrdered)[1:100, ]
+  write.csv(resOrderedDF, file.path(paste0("results_",con1,"vs", con2), "results_full.csv"))
+  
+  library("ReportingTools")
+  htmlRep <- HTMLReport(shortName="report", title="My report",
+                      reportDirectory="./report")
+  #publish(resOrderedDF, htmlRep)
+  #url <- finish(htmlRep)
+  #browseURL(url)
+}
+```
+
+
+```{r, error=TRUE}
+DE_analyse <- function(con1, con2, dds){
+  res <- res_func(con1, con2)
+  res05_func(con1, con2)
+  resLFC1 <- resLFC1_func(con1, con2)
+  resSig_func(con1, con2, res)
+  #topGene <- counts_plot(con1, con2, res, dds)
+  ggplot_function(topGene, con1, con2, res)
+  pval_hist(res, con1, con2)
+  independent_filtering(resLFC1, con1, con2)
+  volcanoPlot(res, con1, con2)
+
+
+
+  ens.str <- substr(rownames(res), 1, 15)
+  res$symbol <- mapIds(org.Hs.eg.db,
+                       keys=ens.str,
+                       column="SYMBOL",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+  res$entrez <- mapIds(org.Hs.eg.db,
+                       keys=ens.str,
+                       column="ENTREZID",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+  resOrdered <- res[order(res$pvalue),]
+
+  resOrderedDF <- as.data.frame(resOrdered)[1:100, ]
+  write.csv(resOrderedDF, file.path(paste0("results_",con1,"vs", con2), "results_full.csv"))
+
+  dir.create(paste0("results_",con1,"vs", con2), showWarnings = FALSE)
+  htmlRep <- HTMLReport(shortName="report", title="My report",
+                      reportDirectory=file.path(paste0("results_",con1,"vs", con2), "/report"))
+  publish(resOrderedDF, htmlRep)
+  url <- finish(htmlRep)
+  #browseURL(url)
+  
+}
+```
+
+
+
+```{r, error=TRUE}
+#for (i in 1:3)
+for (i in 1:length(contr1))
+{
+  
+  DE_analyse(contr1[i], contr2[i], dds)
+  
+}
+
+
+```
+
+
+
+
+
+
+
+
+```{r, error=TRUE}
+DE_analyse <- function(con1, con2){
+
+res <- results(dds, contrast=c("Group",con1,con2))
+print(res)
+
+summary(res)
+
+cat("The results function contains a number of arguments to customize the results table which is generated. You can read about these arguments by looking up ?results. Note that the results function automatically performs independent filtering based on the mean of normalized counts for each gene, optimizing the number of genes which will have an adjusted p value below a given FDR cutoff, alpha. Independent filtering is further discussed below. By default the argument alpha is set to 0.1. If the adjusted p value cutoff will be a value other than 0.1, alpha should be set to that value:")
+
+res05 <- results(dds,contrast=c("Group",con1,con2),  alpha=0.05)
+cat("\nSummary and sum of res05")
+summary(res05)
+print(table(res05$padj < 0.05))
+print(sum(res05$padj < 0.05, na.rm=TRUE))
+
+
+
+cat("\nSummary of resLFC1. By specifying lfcThreshold = 1, we test for genes that show significant effects of treatment on gene counts more than doubling or less than halving, because 21=2.")
+resLFC1 <- results(dds,contrast=c("Group",con1,con2),  lfcThreshold=1)
+print(table(resLFC1$padj < 0.1))
+
+
+cat("\nWe subset the results table to these genes and then sort it by the log2 fold change estimate to get the significant genes with the strongest down-regulation:")
+resSig <- subset(res, padj < 0.1)
+print(head(resSig[ order(resSig$log2FoldChange), ]))
+cat("\nand with the strongest up-regulation:")
+print(head(resSig[ order(resSig$log2FoldChange, decreasing = TRUE), ]))
+
+
+topGene <- rownames(res)[which.min(res$padj)]
+
+geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("Condition","Line"), returnData = TRUE)           
+print(ggplot(geneCounts, aes(x = Condition, y = count, color = Line)) +   scale_y_log10() +  geom_beeswarm(cex = 3))
+print(ggplot(geneCounts, aes(x = Condition, y = count, color = Line, group = Line)) +  scale_y_log10() + geom_point(size = 3) + geom_line())
+
+
+resultsNames(dds)
+try(
+  res2 <- lfcShrink(dds, coef=paste("Group_", con2, "_vs_", con1, sep = ''), type="apeglm")
+)
+  
+try(plotMA(res2, ylim = c(-5, 5)))
+  
+  
+try(plotMA(res2, ylim = c(-12,12)))
+try(  topGene <- rownames(res2)[which.min(res$padj)])
+try(  with(res2[topGene, ], {
+    points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
+    text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
+  })
+)
+
+
+
+hist(res$pvalue[res$baseMean > 1], breaks = 0:20/20,
+     col = "grey50", border = "white")
+
+
+qs <- c(0, quantile(resLFC1$baseMean[resLFC1$baseMean > 0], 0:6/6))
+bins <- cut(resLFC1$baseMean, qs)
+levels(bins) <- paste0("~", round(signif((qs[-1] + qs[-length(qs)])/2, 2)))
+fractionSig <- tapply(resLFC1$pvalue, bins, function(p)
+  mean(p < .05, na.rm = TRUE))
+barplot(fractionSig, xlab = "mean normalized count",
+        ylab = "fraction of small p values")
+
+
+library("AnnotationDbi")
+#BiocManager::install("org.Hs.eg.db")
+library("org.Hs.eg.db")
+#columns(org.Hs.eg.db)
+ens.str <- substr(rownames(res), 1, 15)
+res$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+print(head(res))
+
+
+
+
+volcanoPlot(res)
+
+
+
+}
+```
+
+```{r, error=TRUE}
+dds <- DESeq(ddssva)
+```
+
+
+```{r, error=TRUE}
+#for (i in 1:3)
+for (i in 1:length(contr1))
+{
+  
+  DE_analyse(contr1[i], contr2[i])
+  
+}
+
+```
+
+
+```{r, error=TRUE}
+library("pheatmap")
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+df <- as.data.frame(colData(dds)[,c("Line","Condition")])
+```
+
+
+```{r, error=TRUE}
+
+pheatmap(assay(vsd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df,  clustering_distance_rows = "correlation", clustering_distance_cols= "correlation"
+)
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df
+)
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df,  clustering_distance_rows = "euclidean", clustering_distance_cols= "euclidean")
+
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "ward.D"
+)
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "ward.D2"
+)
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "single"
+)
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "complete"
+)
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "median"
+)
+
+pheatmap(assay(vsd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "average"
+)
+
+
+pheatmap(assay(dds)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+
+pheatmap(assay(dds)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "ward.D"
+)
+
+# this gives log2(n + 1)
+ntd <- normTransform(dds)
+
+
+pheatmap(assay(ntd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+
+pheatmap(assay(ntd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df, clustering_method = "ward.D"
+)
+
+pheatmap(assay(ntd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df,  clustering_distance_rows = "correlation", clustering_distance_cols= "correlation"
+)
+```
+
+
